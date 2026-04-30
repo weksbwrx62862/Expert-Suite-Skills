@@ -1,0 +1,212 @@
+name: Upgrade Test
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+  workflow_dispatch:
+
+concurrency:
+  group: upgrade-test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  upgrade-test:
+    name: omc update + session-start hook
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      # ── 1. Environment ──────────────────────────────────────────────────────
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      # ── 2. Install Claude Code ────────────────────────────────────────────────
+      # Keep Claude Code installed in CI so the upgrade path still runs in a
+      # realistic environment, but avoid relying on Claude runtime behavior for
+      # hook verification. Step 6 validates the installed SessionStart hook
+      # directly from repo-owned artifacts and therefore runs on push + PR.
+
+      - name: Install Claude Code
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          claude --version
+
+      - name: Verify Claude Code is on PATH
+        run: which claude
+
+      # ── 3. Install omc@4.9.3 via npm ────────────────────────────────────────
+      # Establishes the "old version" baseline before `omc update` is run.
+
+      - name: Install omc v4.9.3 via npm
+        run: npm install -g oh-my-claude-sisyphus@4.9.3
+
+      - name: Verify omc version is 4.9.3
+        run: |
+          omc --version > "$RUNNER_TEMP/omc-pre-update.version" 2>&1
+          VERSION_EXIT=$?
+          INSTALLED_VERSION=$(cat "$RUNNER_TEMP/omc-pre-update.version")
+
+          if [ "$VERSION_EXIT" -ne 0 ]; then
+            echo "FAIL: omc --version exited with code $VERSION_EXIT"
+            cat "$RUNNER_TEMP/omc-pre-update.version"
+            exit 1
+          fi
+
+          echo "Installed omc version: $INSTALLED_VERSION"
+          if [ "$INSTALLED_VERSION" != "4.9.3" ]; then
+            echo "Expected version 4.9.3, got: $INSTALLED_VERSION"
+            exit 1
+          fi
+
+      # ── 4. Run omc update and verify clean stdout only ───────────────────────
+      # omc update must:
+      #   - Exit 0
+      #   - Produce zero stderr
+      # Any npm warnings, git warnings, or sync messages to stderr are failures.
+      # Note: syncMarketplaceClone() is best-effort and skips gracefully when
+      # the marketplace clone (~/.claude/plugins/marketplaces/omc/) doesn't exist,
+      # so CI runners with a fresh home directory are handled correctly.
+
+      - name: Run omc update
+        id: omc-update
+        env:
+          # Suppress npm update progress bar to keep stdout clean
+          npm_config_progress: 'false'
+        run: |
+          set -o pipefail
+
+          # Capture exit code of omc update itself (PIPESTATUS[0])
+          # npm install may emit deprecation warnings to stderr — those are not
+          # omc errors. Filter those out and fail on everything else.
+          set +e
+          omc update 1>"$RUNNER_TEMP/omc-update.stdout.log" 2>"$RUNNER_TEMP/omc-update.stderr.log"
+          UPDATE_EXIT=$?
+          set -e
+
+          # Check for non-npm stderr (omc warnings/errors/exceptions)
+          # Exclude npm deprecation warnings: "npm deprecated ..." or lines not starting with npm/
+          # All other stderr lines (omc console.warn, error, exception, fail patterns) are failures.
+          if grep -vE '^npm deprecated ' "$RUNNER_TEMP/omc-update.stderr.log" 2>/dev/null | grep -qiE '^(error|exception|fail|critical|warn|omc)'; then
+            echo "FAIL: omc update produced stderr:"
+            cat "$RUNNER_TEMP/omc-update.stderr.log"
+            echo "Full stdout:"
+            cat "$RUNNER_TEMP/omc-update.stdout.log"
+            exit 1
+          fi
+
+          if [ "$UPDATE_EXIT" -ne 0 ]; then
+            echo "FAIL: omc update exited with code $UPDATE_EXIT"
+            echo "Full stdout:"
+            cat "$RUNNER_TEMP/omc-update.stdout.log"
+            echo "Full stderr:"
+            cat "$RUNNER_TEMP/omc-update.stderr.log"
+            exit 1
+          fi
+
+          echo "PASS: omc update succeeded"
+
+      # ── 5. Verify new omc version installed ──────────────────────────────────
+
+      - name: Verify omc version is latest after update
+        run: |
+          omc --version > "$RUNNER_TEMP/omc-post-update.version" 2>&1
+          VERSION_EXIT=$?
+          UPDATED_VERSION=$(cat "$RUNNER_TEMP/omc-post-update.version")
+
+          if [ "$VERSION_EXIT" -ne 0 ]; then
+            echo "FAIL: omc --version exited with code $VERSION_EXIT"
+            cat "$RUNNER_TEMP/omc-post-update.version"
+            exit 1
+          fi
+
+          echo "Updated omc version: $UPDATED_VERSION"
+          if [ -z "$UPDATED_VERSION" ]; then
+            echo "FAIL: omc --version returned empty"
+            exit 1
+          fi
+          if [ "$UPDATED_VERSION" = "4.9.3" ]; then
+            echo "FAIL: omc version still 4.9.3 after update"
+            exit 1
+          fi
+          echo "PASS: omc updated from 4.9.3 to $UPDATED_VERSION"
+
+      # ── 6. Verify SessionStart hook wiring + execution ───────────────────────
+      # Validate the update-owned coverage directly:
+      #   - settings.json contains a SessionStart command for session-start.mjs
+      #   - the installed standalone hook script exists
+      #   - the hook script runs successfully on representative SessionStart JSON
+      #
+      # This keeps upgrade coverage inside OMC-owned artifacts and avoids relying
+      # on external Claude CLI print-mode behavior in headless CI.
+      - name: Verify SessionStart hook wiring and script
+        run: |
+          set -o pipefail
+
+          CLAUDE_CONFIG_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+          SESSION_HOOK="$CLAUDE_CONFIG_DIR/hooks/session-start.mjs"
+          SETTINGS_PATH="$CLAUDE_CONFIG_DIR/settings.json"
+
+          if [ ! -f "$SESSION_HOOK" ]; then
+            echo "FAIL: missing SessionStart hook script at $SESSION_HOOK"
+            exit 1
+          fi
+
+          if [ ! -f "$SETTINGS_PATH" ]; then
+            echo "FAIL: missing Claude settings at $SETTINGS_PATH"
+            exit 1
+          fi
+
+          SESSION_COMMAND="$(node -e '
+            const fs = require("fs");
+            const settings = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+            const groups = settings.hooks?.SessionStart ?? [];
+            const command = groups
+              .flatMap(group => group?.hooks ?? [])
+              .find(hook => hook?.type === "command" && typeof hook.command === "string" && hook.command.includes("session-start.mjs"))
+              ?.command ?? "";
+            process.stdout.write(command);
+          ' "$SETTINGS_PATH")"
+
+          if [ -z "$SESSION_COMMAND" ]; then
+            echo "FAIL: settings.json is missing a SessionStart command for session-start.mjs"
+            cat "$SETTINGS_PATH"
+            exit 1
+          fi
+
+          printf '%s' \
+            "{\"hook_event_name\":\"SessionStart\",\"session_id\":\"ci-upgrade-test\",\"cwd\":\"$GITHUB_WORKSPACE\"}" \
+            | node "$SESSION_HOOK" 1>"$RUNNER_TEMP/session.stdout.log" 2>"$RUNNER_TEMP/session.stderr.log"
+
+          if [ -s "$RUNNER_TEMP/session.stderr.log" ]; then
+            echo "FAIL: SessionStart hook produced stderr:"
+            cat "$RUNNER_TEMP/session.stderr.log"
+            echo "stdout:"
+            cat "$RUNNER_TEMP/session.stdout.log"
+            exit 1
+          fi
+
+          node -e '
+            const fs = require("fs");
+            const output = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+            if (output.continue !== true) {
+              throw new Error("SessionStart hook did not return continue=true");
+            }
+            const hookName = output.hookSpecificOutput?.hookEventName;
+            if (hookName !== undefined && hookName !== "SessionStart") {
+              throw new Error(`Unexpected hookSpecificOutput.hookEventName: ${hookName}`);
+            }
+          ' "$RUNNER_TEMP/session.stdout.log"
+
+          echo "PASS: SessionStart hook is configured and executes cleanly"

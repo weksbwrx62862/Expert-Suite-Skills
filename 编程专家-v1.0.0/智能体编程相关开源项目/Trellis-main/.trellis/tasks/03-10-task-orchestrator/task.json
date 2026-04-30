@@ -1,0 +1,59 @@
+{
+  "id": "task-orchestrator",
+  "name": "task-orchestrator",
+  "title": "Task 编排状态机：status/next/advance/log 四命令",
+  "description": "扩展 task.py 支持 parent/child 编排状态机 (status/next/advance/log)，将编排逻辑从 prompt 下沉到基础设施，统一 start.md、autopilot、dispatch 三个场景",
+  "status": "planning",
+  "package": "cli",
+  "dev_type": "backend",
+  "scope": "task",
+  "priority": "P1",
+  "creator": "taosu",
+  "assignee": "taosu",
+  "createdAt": "2026-03-10",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "feat/v0.4.0-beta",
+  "worktree_path": null,
+  "current_phase": 0,
+  "next_action": [
+    {
+      "phase": 1,
+      "action": "implement"
+    },
+    {
+      "phase": 2,
+      "action": "check"
+    },
+    {
+      "phase": 3,
+      "action": "finish"
+    },
+    {
+      "phase": 4,
+      "action": "create-pr"
+    }
+  ],
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    ".trellis/scripts/task.py",
+    ".trellis/scripts/common/paths.py",
+    ".trellis/.gitignore",
+    "packages/cli/src/templates/trellis/gitignore.txt",
+    "packages/cli/src/templates/markdown/gitignore.txt",
+    "packages/cli/src/constants/paths.ts",
+    ".claude/commands/trellis/start.md",
+    ".claude/hooks/session-start.py",
+    ".claude/hooks/inject-subagent-context.py",
+    ".claude/agents/dispatch.md",
+    "marketplace/skills/trellis-autopilot/"
+  ],
+  "notes": "架构升级：从指令式 prompt 驱动到状态机查询驱动。autopilot 是第一个受益者，但 start.md/dispatch/session-start hook 后续都可复用。",
+  "meta": {
+    "linear_issue": "MIN-374"
+  }
+}

@@ -1,0 +1,122 @@
+---
+title: "Introduction"
+description: "Persistent memory compression system for Claude Code"
+---
+
+# Claude-Mem
+
+**Persistent memory compression system for Claude Code**
+
+Claude-Mem seamlessly preserves context across sessions by automatically capturing tool usage observations, generating semantic summaries, and making them available to future sessions. This enables Claude to maintain continuity of knowledge about projects even after sessions end or reconnect.
+
+## Quick Start
+
+Install with a single command:
+
+```bash
+npx claude-mem install
+```
+
+Or install from the plugin marketplace inside Claude Code:
+
+```bash
+/plugin marketplace add thedotmack/claude-mem
+/plugin install claude-mem
+```
+
+Restart Claude Code. Context from previous sessions will automatically appear in new sessions.
+
+## Key Features
+
+- 🧠 **Persistent Memory** - Context survives across sessions
+- 📁 **Folder Context Files** - Auto-generated `CLAUDE.md` in project folders with activity timelines
+- 🌐 **Multilingual Modes** - Supports 28 languages (Spanish, Chinese, French, Japanese, etc.)
+- 🎭 **Mode System** - Switch between workflows (Code, Email Investigation, Chill)
+- 🔍 **MCP Search Tools** - Query your project history with natural language
+- 🧠 **Knowledge Agents** - Build queryable "brains" from your observation history
+- 🌐 **Web Viewer UI** - Real-time memory stream visualization at http://localhost:37777
+- 🔒 **Privacy Control** - Use `<private>` tags to exclude sensitive content from storage
+- ⚙️ **Context Configuration** - Fine-grained control over what context gets injected
+- 🤖 **Automatic Operation** - No manual intervention required
+- 📊 **FTS5 Search** - Fast full-text search across observations
+- 🔗 **Citations** - Reference past observations with IDs
+
+## How It Works
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ Session Start → Inject context from last 10 sessions       │
+└─────────────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────┐
+│ User Prompts → Create session, save user prompts           │
+└─────────────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────┐
+│ Tool Executions → Capture observations (Read, Write, etc.)  │
+└─────────────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────┐
+│ Worker Processes → Extract learnings via Claude Agent SDK   │
+└─────────────────────────────────────────────────────────────┘
+                            ↓
+┌─────────────────────────────────────────────────────────────┐
+│ Session Ends → Generate summary, ready for next session     │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Core Components:**
+1. **4 Lifecycle Hooks** - SessionStart, UserPromptSubmit, PostToolUse, Stop
+2. **Smart Install** - Cached dependency checker (pre-hook script)
+3. **Worker Service** - HTTP API on port 37777 managed by Bun
+4. **SQLite Database** - Stores sessions, observations, summaries with FTS5 search
+5. **MCP Search Tools** - Query historical context with natural language
+6. **Web Viewer UI** - Real-time visualization with SSE and infinite scroll
+
+See [Architecture Overview](architecture/overview) for details.
+
+## System Requirements
+
+- **Node.js**: 18.0.0 or higher
+- **Claude Code**: Latest version with plugin support
+- **Bun**: JavaScript runtime and process manager (auto-installed if missing)
+- **SQLite 3**: For persistent storage (bundled)
+
+## What's New
+
+**v9.0.0 - Live Context:**
+- **Folder Context Files**: Auto-generated `CLAUDE.md` in project folders with activity timelines
+- **Worktree Support**: Unified context from parent repos and git worktrees
+- **Configurable Observation Limits**: Control how many observations appear in context
+- **Windows Fixes**: Resolved IPC detection and hook execution issues
+- **Settings Auto-Creation**: `settings.json` now auto-creates on first run
+- **MCP Tools Naming**: Updated from "mem-search skill" to "MCP tools" terminology
+
+**v7.1.0 - Bun Migration:**
+- Replaced PM2 with native Bun process management
+- Switched from better-sqlite3 to bun:sqlite for faster database access
+- Simplified cross-platform support
+
+**v7.0.0 - Context Configuration:**
+- 11 settings for fine-grained control over context injection
+- Dual-tag privacy system (`<private>` tags)
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/installation">
+    Quick start & advanced installation
+  </Card>
+  <Card title="Getting Started" icon="rocket" href="/usage/getting-started">
+    Learn how Claude-Mem works automatically
+  </Card>
+  <Card title="Folder Context" icon="folder-open" href="/usage/folder-context">
+    Auto-generated folder CLAUDE.md files
+  </Card>
+  <Card title="Search Tools" icon="magnifying-glass" href="/usage/search-tools">
+    Query your project history
+  </Card>
+  <Card title="Knowledge Agents" icon="brain" href="/usage/knowledge-agents">
+    Build queryable corpora from your history
+  </Card>
+</CardGroup>
