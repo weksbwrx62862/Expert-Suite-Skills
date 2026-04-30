@@ -1,0 +1,24 @@
+{
+  "name": "claude-mem",
+  "version": "12.4.8",
+  "description": "Memory compression system for Claude Code - persist context across sessions",
+  "author": {
+    "name": "Alex Newman"
+  },
+  "repository": "https://github.com/thedotmack/claude-mem",
+  "license": "AGPL-3.0",
+  "keywords": [
+    "claude",
+    "claude-code",
+    "claude-agent-sdk",
+    "mcp",
+    "plugin",
+    "memory",
+    "compression",
+    "knowledge-graph",
+    "transcript",
+    "typescript",
+    "nodejs"
+  ],
+  "homepage": "https://github.com/thedotmack/claude-mem#readme"
+}

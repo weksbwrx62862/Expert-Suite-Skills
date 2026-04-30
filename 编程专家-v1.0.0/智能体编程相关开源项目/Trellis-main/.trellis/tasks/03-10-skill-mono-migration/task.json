@@ -1,0 +1,47 @@
+{
+  "id": "skill-mono-migration",
+  "name": "skill-mono-migration",
+  "title": "Skill: 单仓迁移 Monorepo 指南（基于实际经验）",
+  "description": "",
+  "status": "planning",
+  "package": null,
+  "dev_type": null,
+  "scope": null,
+  "priority": "P3",
+  "creator": "taosu",
+  "assignee": "taosu",
+  "createdAt": "2026-03-10",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "feat/v0.4.0-beta",
+  "worktree_path": null,
+  "current_phase": 0,
+  "next_action": [
+    {
+      "phase": 1,
+      "action": "implement"
+    },
+    {
+      "phase": 2,
+      "action": "check"
+    },
+    {
+      "phase": 3,
+      "action": "finish"
+    },
+    {
+      "phase": 4,
+      "action": "create-pr"
+    }
+  ],
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "linear_issue": "MIN-373"
+  }
+}

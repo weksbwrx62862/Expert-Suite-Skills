@@ -1,0 +1,68 @@
+{
+  "name": "编程专家",
+  "name_en": "Programming Expert",
+  "version": "1.1.0",
+  "description": "覆盖软件开发全流程的编程专家，融入Karpathy编码哲学与Harness工程化框架。支持代码审查、代码生成、Bug诊断、重构建议、技术选型、API设计、测试用例生成、文档生成，以及Spec驱动开发、任务拆解与执行、项目记忆管理。",
+  "description_en": "Full-stack programming expert with Karpathy coding philosophy and Harness engineering framework. Supports code review, generation, bug diagnosis, refactoring, tech selection, API design, test generation, documentation, spec-driven development, task decomposition, and project memory management.",
+  "author": "Qoder",
+  "license": "MIT",
+  "min_qoder_version": "1.0.0",
+  "skills": [
+    "Karpathy编码规范",
+    "Spec驱动开发",
+    "任务拆解与执行",
+    "项目记忆管理",
+    "代码审查",
+    "代码生成",
+    "Bug诊断",
+    "重构建议",
+    "技术选型",
+    "API设计",
+    "测试用例生成",
+    "文档生成"
+  ],
+  "connectors": [
+    "filesystem"
+  ],
+  "keywords": [
+    "编程",
+    "代码审查",
+    "代码生成",
+    "Bug修复",
+    "重构",
+    "技术选型",
+    "API设计",
+    "测试用例",
+    "文档生成",
+    "Karpathy",
+    "编码规范",
+    "Harness",
+    "Spec驱动",
+    "任务拆解",
+    "项目记忆",
+    "软件工程",
+    "代码质量",
+    "programming",
+    "code review",
+    "code generation",
+    "bug diagnosis",
+    "refactoring",
+    "tech stack",
+    "API design",
+    "testing",
+    "documentation",
+    "spec-driven",
+    "task decomposition",
+    "project memory"
+  ],
+  "categories": [
+    "development",
+    "programming",
+    "engineering"
+  ],
+  "languages": [
+    "zh",
+    "en"
+  ],
+  "entry_point": "README.md"
+}

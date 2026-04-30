@@ -1,0 +1,565 @@
+/**
+ * Search Routes
+ *
+ * Handles all search operations via SearchManager.
+ * All endpoints call SearchManager methods directly.
+ */
+
+import express, { Request, Response } from 'express';
+import { z } from 'zod';
+import { SearchManager } from '../../SearchManager.js';
+import { BaseRouteHandler } from '../BaseRouteHandler.js';
+import { validateBody } from '../middleware/validateBody.js';
+import { logger } from '../../../../utils/logger.js';
+import { groupByDate } from '../../../../shared/timeline-formatting.js';
+import type { ObservationSearchResult, SessionSummarySearchResult } from '../../../sqlite/types.js';
+
+// Plan 06 Phase 3 — per-route Zod schema. The semantic-context endpoint
+// also accepts query-string fallbacks, so the body itself is fully optional.
+const semanticContextSchema = z.object({
+  q: z.string().optional(),
+  project: z.string().optional(),
+  limit: z.union([z.string(), z.number()]).optional(),
+}).passthrough();
+
+export class SearchRoutes extends BaseRouteHandler {
+  constructor(
+    private searchManager: SearchManager
+  ) {
+    super();
+  }
+
+  setupRoutes(app: express.Application): void {
+    // Unified endpoints (new consolidated API)
+    app.get('/api/search', this.handleUnifiedSearch.bind(this));
+    app.get('/api/timeline', this.handleUnifiedTimeline.bind(this));
+    app.get('/api/decisions', this.handleDecisions.bind(this));
+    app.get('/api/changes', this.handleChanges.bind(this));
+    app.get('/api/how-it-works', this.handleHowItWorks.bind(this));
+
+    // Backward compatibility endpoints
+    app.get('/api/search/observations', this.handleSearchObservations.bind(this));
+    app.get('/api/search/sessions', this.handleSearchSessions.bind(this));
+    app.get('/api/search/prompts', this.handleSearchPrompts.bind(this));
+    app.get('/api/search/by-concept', this.handleSearchByConcept.bind(this));
+    app.get('/api/search/by-file', this.handleSearchByFile.bind(this));
+    app.get('/api/search/by-type', this.handleSearchByType.bind(this));
+
+    // Context endpoints
+    app.get('/api/context/recent', this.handleGetRecentContext.bind(this));
+    app.get('/api/context/timeline', this.handleGetContextTimeline.bind(this));
+    app.get('/api/context/preview', this.handleContextPreview.bind(this));
+    app.get('/api/context/inject', this.handleContextInject.bind(this));
+    app.post('/api/context/semantic', validateBody(semanticContextSchema), this.handleSemanticContext.bind(this));
+
+    // Timeline and help endpoints
+    app.get('/api/timeline/by-query', this.handleGetTimelineByQuery.bind(this));
+    app.get('/api/search/help', this.handleSearchHelp.bind(this));
+  }
+
+  /**
+   * Unified search (observations + sessions + prompts)
+   * GET /api/search?query=...&type=observations&limit=20
+   */
+  private handleUnifiedSearch = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const result = await this.searchManager.search(req.query);
+    res.json(result);
+  });
+
+  /**
+   * Unified timeline (anchor or query-based)
+   * GET /api/timeline?anchor=123 OR GET /api/timeline?query=...
+   */
+  private handleUnifiedTimeline = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const result = await this.searchManager.timeline(req.query);
+    res.json(result);
+  });
+
+  /**
+   * Semantic shortcut for finding decision observations
+   * GET /api/decisions?limit=20
+   */
+  private handleDecisions = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const result = await this.searchManager.decisions(req.query);
+    res.json(result);
+  });
+
+  /**
+   * Semantic shortcut for finding change-related observations
+   * GET /api/changes?limit=20
+   */
+  private handleChanges = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const result = await this.searchManager.changes(req.query);
+    res.json(result);
+  });
+
+  /**
+   * Semantic shortcut for finding "how it works" explanations
+   * GET /api/how-it-works?limit=20
+   */
+  private handleHowItWorks = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const result = await this.searchManager.howItWorks(req.query);
+    res.json(result);
+  });
+
+  /**
+   * Search observations (use /api/search?type=observations instead)
+   * GET /api/search/observations?query=...&limit=20&project=...
+   */
+  private handleSearchObservations = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const result = await this.searchManager.searchObservations(req.query);
+    res.json(result);
+  });
+
+  /**
+   * Search session summaries
+   * GET /api/search/sessions?query=...&limit=20
+   */
+  private handleSearchSessions = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const result = await this.searchManager.searchSessions(req.query);
+    res.json(result);
+  });
+
+  /**
+   * Search user prompts
+   * GET /api/search/prompts?query=...&limit=20
+   */
+  private handleSearchPrompts = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const result = await this.searchManager.searchUserPrompts(req.query);
+    res.json(result);
+  });
+
+  /**
+   * Search observations by concept
+   * GET /api/search/by-concept?concept=discovery&limit=5
+   *
+   * Chroma errors surface as 503 via ChromaUnavailableError (thrown by orchestrator).
+   */
+  private handleSearchByConcept = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const orchestrator = this.searchManager.getOrchestrator();
+    const formatter = this.searchManager.getFormatter();
+    const query = req.query as Record<string, any>;
+    const rawConcept = query.concepts ?? query.concept;
+    const concept = Array.isArray(rawConcept) ? rawConcept[0] : rawConcept;
+    const strategyResult = await orchestrator.findByConcept(concept, query);
+    const observations = strategyResult.results.observations;
+
+    if (observations.length === 0) {
+      res.json({
+        content: [{
+          type: 'text' as const,
+          text: `No observations found with concept "${concept}"`
+        }]
+      });
+      return;
+    }
+
+    const header = `Found ${observations.length} observation(s) with concept "${concept}"\n\n${formatter.formatTableHeader()}`;
+    const rows = observations.map((obs: ObservationSearchResult, i: number) => formatter.formatObservationIndex(obs, i));
+    res.json({
+      content: [{
+        type: 'text' as const,
+        text: header + '\n' + rows.join('\n')
+      }]
+    });
+  });
+
+  /**
+   * Search by file path
+   * GET /api/search/by-file?filePath=...&limit=10
+   *
+   * Chroma errors surface as 503 via ChromaUnavailableError (thrown by orchestrator).
+   */
+  private handleSearchByFile = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const orchestrator = this.searchManager.getOrchestrator();
+    const formatter = this.searchManager.getFormatter();
+    const query = req.query as Record<string, any>;
+    // Accept both filePath and files for API compatibility
+    const rawFilePath = query.filePath ?? query.files;
+    const filePath = Array.isArray(rawFilePath)
+      ? rawFilePath[0]
+      : (typeof rawFilePath === 'string' && rawFilePath.includes(','))
+        ? rawFilePath.split(',')[0].trim()
+        : rawFilePath;
+
+    const { observations, sessions } = await orchestrator.findByFile(filePath, query);
+    const totalResults = observations.length + sessions.length;
+
+    if (totalResults === 0) {
+      res.json({
+        content: [{
+          type: 'text' as const,
+          text: `No results found for file "${filePath}"`
+        }]
+      });
+      return;
+    }
+
+    // Combine observations and sessions with timestamps for date grouping
+    const combined: Array<{
+      type: 'observation' | 'session';
+      data: ObservationSearchResult | SessionSummarySearchResult;
+      epoch: number;
+      created_at: string;
+    }> = [
+      ...observations.map((obs: ObservationSearchResult) => ({
+        type: 'observation' as const,
+        data: obs,
+        epoch: obs.created_at_epoch,
+        created_at: obs.created_at
+      })),
+      ...sessions.map((sess: SessionSummarySearchResult) => ({
+        type: 'session' as const,
+        data: sess,
+        epoch: sess.created_at_epoch,
+        created_at: sess.created_at
+      }))
+    ];
+
+    combined.sort((a, b) => b.epoch - a.epoch);
+    const resultsByDate = groupByDate(combined, item => item.created_at);
+
+    const lines: string[] = [];
+    lines.push(`Found ${totalResults} result(s) for file "${filePath}"`);
+    lines.push('');
+
+    for (const [day, dayResults] of resultsByDate) {
+      lines.push(`### ${day}`);
+      lines.push('');
+      lines.push(formatter.formatTableHeader());
+      for (const result of dayResults) {
+        if (result.type === 'observation') {
+          lines.push(formatter.formatObservationIndex(result.data as ObservationSearchResult, 0));
+        } else {
+          lines.push(formatter.formatSessionIndex(result.data as SessionSummarySearchResult, 0));
+        }
+      }
+      lines.push('');
+    }
+
+    res.json({
+      content: [{
+        type: 'text' as const,
+        text: lines.join('\n')
+      }]
+    });
+  });
+
+  /**
+   * Search observations by type
+   * GET /api/search/by-type?type=bugfix&limit=10
+   *
+   * Chroma errors surface as 503 via ChromaUnavailableError (thrown by orchestrator).
+   */
+  private handleSearchByType = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const orchestrator = this.searchManager.getOrchestrator();
+    const formatter = this.searchManager.getFormatter();
+    const query = req.query as Record<string, any>;
+    const rawType = query.type;
+    const type = (typeof rawType === 'string' && rawType.includes(','))
+      ? rawType.split(',').map((s: string) => s.trim()).filter(Boolean)
+      : rawType;
+    const typeStr = Array.isArray(type) ? type.join(', ') : type;
+
+    const strategyResult = await orchestrator.findByType(type, query);
+    const observations = strategyResult.results.observations;
+
+    if (observations.length === 0) {
+      res.json({
+        content: [{
+          type: 'text' as const,
+          text: `No observations found with type "${typeStr}"`
+        }]
+      });
+      return;
+    }
+
+    const header = `Found ${observations.length} observation(s) with type "${typeStr}"\n\n${formatter.formatTableHeader()}`;
+    const rows = observations.map((obs: ObservationSearchResult, i: number) => formatter.formatObservationIndex(obs, i));
+    res.json({
+      content: [{
+        type: 'text' as const,
+        text: header + '\n' + rows.join('\n')
+      }]
+    });
+  });
+
+  /**
+   * Get recent context (summaries and observations for a project)
+   * GET /api/context/recent?project=...&limit=3
+   */
+  private handleGetRecentContext = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const result = await this.searchManager.getRecentContext(req.query);
+    res.json(result);
+  });
+
+  /**
+   * Get context timeline around an anchor point
+   * GET /api/context/timeline?anchor=123&depth_before=10&depth_after=10&project=...
+   */
+  private handleGetContextTimeline = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const result = await this.searchManager.getContextTimeline(req.query);
+    res.json(result);
+  });
+
+  /**
+   * Generate context preview for settings modal
+   * GET /api/context/preview?project=...
+   */
+  private handleContextPreview = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const projectName = req.query.project as string;
+
+    if (!projectName) {
+      this.badRequest(res, 'Project parameter is required');
+      return;
+    }
+
+    // Import context generator (runs in worker, has access to database)
+    const { generateContext } = await import('../../../context-generator.js');
+
+    // Use project name as CWD (generateContext uses path.basename to get project)
+    const cwd = `/preview/${projectName}`;
+
+    // Generate context with colors for terminal display
+    const contextText = await generateContext(
+      {
+        session_id: 'preview-' + Date.now(),
+        cwd: cwd,
+        projects: [projectName]
+      },
+      true  // forHuman=true for ANSI terminal output
+    );
+
+    // Return as plain text
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.send(contextText);
+  });
+
+  /**
+   * Context injection endpoint for hooks
+   * GET /api/context/inject?projects=...&colors=true
+   * GET /api/context/inject?project=...&colors=true (legacy, single project)
+   *
+   * Returns pre-formatted context string ready for display.
+   * Use colors=true for ANSI-colored terminal output.
+   *
+   * For worktrees, pass comma-separated projects (e.g., "main,worktree-branch")
+   * to get a unified timeline from both parent and worktree.
+   */
+  private handleContextInject = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    // Support both legacy `project` and new `projects` parameter
+    const projectsParam = (req.query.projects as string) || (req.query.project as string);
+    const forHuman = req.query.colors === 'true';
+    const full = req.query.full === 'true';
+
+    if (!projectsParam) {
+      this.badRequest(res, 'Project(s) parameter is required');
+      return;
+    }
+
+    // Parse comma-separated projects list
+    const projects = projectsParam.split(',').map(p => p.trim()).filter(Boolean);
+
+    if (projects.length === 0) {
+      this.badRequest(res, 'At least one project is required');
+      return;
+    }
+
+    // Import context generator (runs in worker, has access to database)
+    const { generateContext } = await import('../../../context-generator.js');
+
+    // Use first project name as CWD (for display purposes)
+    const primaryProject = projects[projects.length - 1]; // Last is the current/primary project
+    const cwd = `/context/${primaryProject}`;
+
+    // Generate context with all projects
+    const contextText = await generateContext(
+      {
+        session_id: 'context-inject-' + Date.now(),
+        cwd: cwd,
+        projects: projects,
+        full
+      },
+      forHuman
+    );
+
+    // Return as plain text
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.send(contextText);
+  });
+
+  /**
+   * Semantic context search for per-prompt injection
+   * POST /api/context/semantic  { q, project?, limit? }
+   *
+   * Queries Chroma for observations semantically similar to the user's prompt.
+   * Returns compact markdown for injection as additionalContext.
+   */
+  private handleSemanticContext = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const query = (req.body?.q || req.query.q) as string;
+    const project = (req.body?.project || req.query.project) as string;
+    const limit = Math.min(Math.max(parseInt(String(req.body?.limit || req.query.limit || '5'), 10) || 5, 1), 20);
+
+    if (!query || query.length < 20) {
+      res.json({ context: '', count: 0 });
+      return;
+    }
+
+    let result: any;
+    try {
+      result = await this.searchManager.search({
+        query, type: 'observations', project, limit: String(limit), format: 'json'
+      });
+    } catch (error) {
+      const normalizedError = error instanceof Error ? error : new Error(String(error));
+      logger.error('HTTP', 'Semantic context query failed', { query, project }, normalizedError);
+      res.json({ context: '', count: 0 });
+      return;
+    }
+
+    const observations = result?.observations || [];
+    if (!observations.length) {
+      res.json({ context: '', count: 0 });
+      return;
+    }
+
+    // Format as compact markdown for context injection
+    const lines: string[] = ['## Relevant Past Work (semantic match)\n'];
+    for (const obs of observations.slice(0, limit)) {
+      const date = obs.created_at?.slice(0, 10) || '';
+      lines.push(`### ${obs.title || 'Observation'} (${date})`);
+      if (obs.narrative) lines.push(obs.narrative);
+      lines.push('');
+    }
+
+    res.json({ context: lines.join('\n'), count: observations.length });
+  });
+
+  /**
+   * Get timeline by query (search first, then get timeline around best match)
+   * GET /api/timeline/by-query?query=...&mode=auto&depth_before=10&depth_after=10
+   */
+  private handleGetTimelineByQuery = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const result = await this.searchManager.getTimelineByQuery(req.query);
+    res.json(result);
+  });
+
+  /**
+   * Get search help documentation
+   * GET /api/search/help
+   */
+  private handleSearchHelp = this.wrapHandler((req: Request, res: Response): void => {
+    // Use the actual host:port the request came in on so example URLs always
+    // round-trip back to this same worker — matters for multi-account / non-
+    // default-port setups (#2101, #2103).
+    const baseUrl = `http://${req.headers.host ?? 'localhost'}`;
+    res.json({
+      title: 'Claude-Mem Search API',
+      description: 'HTTP API for searching persistent memory',
+      endpoints: [
+        {
+          path: '/api/search/observations',
+          method: 'GET',
+          description: 'Search observations using full-text search',
+          parameters: {
+            query: 'Search query (required)',
+            limit: 'Number of results (default: 20)',
+            project: 'Filter by project name (optional)'
+          }
+        },
+        {
+          path: '/api/search/sessions',
+          method: 'GET',
+          description: 'Search session summaries using full-text search',
+          parameters: {
+            query: 'Search query (required)',
+            limit: 'Number of results (default: 20)'
+          }
+        },
+        {
+          path: '/api/search/prompts',
+          method: 'GET',
+          description: 'Search user prompts using full-text search',
+          parameters: {
+            query: 'Search query (required)',
+            limit: 'Number of results (default: 20)',
+            project: 'Filter by project name (optional)'
+          }
+        },
+        {
+          path: '/api/search/by-concept',
+          method: 'GET',
+          description: 'Find observations by concept tag',
+          parameters: {
+            concept: 'Concept tag (required): discovery, decision, bugfix, feature, refactor',
+            limit: 'Number of results (default: 10)',
+            project: 'Filter by project name (optional)'
+          }
+        },
+        {
+          path: '/api/search/by-file',
+          method: 'GET',
+          description: 'Find observations and sessions by file path',
+          parameters: {
+            filePath: 'File path or partial path (required)',
+            limit: 'Number of results per type (default: 10)',
+            project: 'Filter by project name (optional)'
+          }
+        },
+        {
+          path: '/api/search/by-type',
+          method: 'GET',
+          description: 'Find observations by type',
+          parameters: {
+            type: 'Observation type (required): discovery, decision, bugfix, feature, refactor',
+            limit: 'Number of results (default: 10)',
+            project: 'Filter by project name (optional)'
+          }
+        },
+        {
+          path: '/api/context/recent',
+          method: 'GET',
+          description: 'Get recent session context including summaries and observations',
+          parameters: {
+            project: 'Project name (default: current directory)',
+            limit: 'Number of recent sessions (default: 3)'
+          }
+        },
+        {
+          path: '/api/context/timeline',
+          method: 'GET',
+          description: 'Get unified timeline around a specific point in time',
+          parameters: {
+            anchor: 'Anchor point: observation ID, session ID (e.g., "S123"), or ISO timestamp (required)',
+            depth_before: 'Number of records before anchor (default: 10)',
+            depth_after: 'Number of records after anchor (default: 10)',
+            project: 'Filter by project name (optional)'
+          }
+        },
+        {
+          path: '/api/timeline/by-query',
+          method: 'GET',
+          description: 'Search for best match, then get timeline around it',
+          parameters: {
+            query: 'Search query (required)',
+            mode: 'Search mode: "auto", "observations", or "sessions" (default: "auto")',
+            depth_before: 'Number of records before match (default: 10)',
+            depth_after: 'Number of records after match (default: 10)',
+            project: 'Filter by project name (optional)'
+          }
+        },
+        {
+          path: '/api/search/help',
+          method: 'GET',
+          description: 'Get this help documentation'
+        }
+      ],
+      examples: [
+        `curl "${baseUrl}/api/search/observations?query=authentication&limit=5"`,
+        `curl "${baseUrl}/api/search/by-type?type=bugfix&limit=10"`,
+        `curl "${baseUrl}/api/context/recent?project=claude-mem&limit=3"`,
+        `curl "${baseUrl}/api/context/timeline?anchor=123&depth_before=5&depth_after=5"`
+      ]
+    });
+  });
+}
