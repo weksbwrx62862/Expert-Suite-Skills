@@ -51,3 +51,6 @@ venv/
 
 # Trae specific
 .trae/
+
+# Claude Code local config
+.claude/
